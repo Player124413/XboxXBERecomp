@@ -569,6 +569,8 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
         case ZYDIS_MNEMONIC_RDMSR:
         case ZYDIS_MNEMONIC_WRMSR:
         case ZYDIS_MNEMONIC_INVLPG:
+        case ZYDIS_MNEMONIC_GETSEC:  // Intel TXT/SMX: no original Xbox CPU (Coppermine/Celeron) ever had it
+        case ZYDIS_MNEMONIC_BNDSTX:  // Intel MPX: same, decades newer than this hardware
             // system/ring-0 instructions a user mode game has no legitimate reason to execute: almost always a
             // misdecode of data that landed in a code region (see the overlapping decode stats xbe_recomp prints),
             // so this logs once and falls through rather than aborting the guest thread like x86_trap would.
