@@ -157,6 +157,22 @@ inline void x87_store80(uint8_t* p, double v) {
     std::memcpy(p + 8, &se, 2);
 }
 
+// packed BCD (18 decimal digits + sign), the m80bcd operand of FBSTP. Doubles only carry ~15-17 significant decimal
+// digits, same precision limit the rest of this x87 model already accepts (st[8] is double, not true 80 bit extended).
+inline void x87_store_bcd(uint8_t* p, double v) {
+    bool neg = std::signbit(v);
+    double r = std::round(std::fabs(v));
+    uint64_t n = r >= 1e18 ? 999999999999999999ull : uint64_t(r);
+    for (int i = 0; i < 9; i++) {
+        uint8_t lo = uint8_t(n % 10);
+        n /= 10;
+        uint8_t hi = uint8_t(n % 10);
+        n /= 10;
+        p[i] = uint8_t(lo | (hi << 4));
+    }
+    p[9] = neg ? 0x80 : 0x00;
+}
+
 inline uint32_t x87_examine(X86Context& ctx) {
     // FXAM class into C3 C2 C0, C1 = sign
     double v = X87_ST(0);

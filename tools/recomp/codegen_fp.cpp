@@ -210,6 +210,9 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
         case ZYDIS_MNEMONIC_FNINIT: emit("ctx.fcw = 0x37F; ctx.fsw = 0; ctx.top = 0;"); return true;  // 0x37F is the power on control word
         case ZYDIS_MNEMONIC_FNCLEX: emit("ctx.fsw &= 0x7F00;"); return true;  // keeps condition codes and TOP
         case ZYDIS_MNEMONIC_FFREE: return true;
+        case ZYDIS_MNEMONIC_FFREEP: emit("x87_pop(ctx);"); return true;  // FFREE + pop, undocumented but common
+        case ZYDIS_MNEMONIC_FEMMS: return true;  // AMD "fast EMMS": same no-op as EMMS, nothing to flush here
+        case ZYDIS_MNEMONIC_FBSTP: emit("x87_store_bcd(X86_PTR(uint8_t, ea), X87_ST(0)); x87_pop(ctx);"); return true;
         case ZYDIS_MNEMONIC_FINCSTP: emit("ctx.top = (ctx.top + 1) & 7;"); return true;
         case ZYDIS_MNEMONIC_FDECSTP: emit("ctx.top = (ctx.top - 1) & 7;"); return true;
         case ZYDIS_MNEMONIC_FCMOVB: case ZYDIS_MNEMONIC_FCMOVBE: case ZYDIS_MNEMONIC_FCMOVE: case ZYDIS_MNEMONIC_FCMOVNB:

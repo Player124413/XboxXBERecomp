@@ -414,6 +414,63 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
         case ZYDIS_MNEMONIC_CMC: Line("\tcf ^= 1;"); return true;
         case ZYDIS_MNEMONIC_CLD: Line("\tctx.df = 0;"); return true;
         case ZYDIS_MNEMONIC_STD: Line("\tctx.df = 1;"); return true;
+        case ZYDIS_MNEMONIC_SALC:  // undocumented: AL = cf ? 0xFF : 0
+            Line("\tctx.eax = (ctx.eax & 0xFFFFFF00u) | (cf ? 0xFFu : 0u);");
+            return true;
+
+        // BCD adjustments. AF (the half carry flag) is not tracked anywhere in this recompiler - nothing else reads
+        // it, so these only use the nibble test every real program relies on; a prior AF=1 from a carrying add/sub
+        // immediately before one of these would be the one case this misses, and that chain is vanishingly rare.
+        case ZYDIS_MNEMONIC_AAA:
+            Line("\t{ uint32_t al = ctx.eax & 0xFFu, ah = (ctx.eax >> 8) & 0xFFu; bool adj = (al & 0xFu) > 9; "
+                 "if (adj) { al += 6; ah = (ah + 1) & 0xFFu; } cf = adj; "
+                 "ctx.eax = (ctx.eax & 0xFFFF0000u) | (ah << 8) | (al & 0xFu); }");
+            return true;
+        case ZYDIS_MNEMONIC_AAS:
+            Line("\t{ uint32_t al = ctx.eax & 0xFFu, ah = (ctx.eax >> 8) & 0xFFu; bool adj = (al & 0xFu) > 9; "
+                 "if (adj) { al -= 6; ah = (ah - 1) & 0xFFu; } cf = adj; "
+                 "ctx.eax = (ctx.eax & 0xFFFF0000u) | (ah << 8) | (al & 0xFu); }");
+            return true;
+        case ZYDIS_MNEMONIC_AAM: {
+            uint32_t d = uint32_t(ops[0].imm.value.u) & 0xFF;
+            if (!d) Line(F("\tx86_trap(ctx, 0x%X, \"divide error\");", va));
+            else
+                Line(F("\t{ uint32_t al = ctx.eax & 0xFFu; uint32_t ah = al / %uu; uint32_t r = al %% %uu; "
+                       "ctx.eax = (ctx.eax & 0xFFFF0000u) | (ah << 8) | r; %s }",
+                       d, d, Szp(8).c_str()));
+            return true;
+        }
+        case ZYDIS_MNEMONIC_AAD: {
+            uint32_t d = uint32_t(ops[0].imm.value.u) & 0xFF;
+            Line(F("\t{ uint32_t r = (((ctx.eax >> 8) & 0xFFu) * %uu + (ctx.eax & 0xFFu)) & 0xFFu; "
+                   "ctx.eax = (ctx.eax & 0xFFFF0000u) | r; %s }",
+                   d, Szp(8).c_str()));
+            return true;
+        }
+        case ZYDIS_MNEMONIC_DAA:
+            Line("\t{ uint32_t old_al = ctx.eax & 0xFFu, old_cf = cf, al = old_al; cf = 0; "
+                 "if ((al & 0xFu) > 9) { cf = old_cf || al > 0xF9u; al = (al + 6) & 0xFFu; } "
+                 "if (old_al > 0x99u || old_cf) { al = (al + 0x60u) & 0xFFu; cf = 1; } "
+                 "ctx.eax = (ctx.eax & 0xFFFFFF00u) | al; uint32_t r = al; " +
+                 Szp(8) + " }");
+            return true;
+        case ZYDIS_MNEMONIC_DAS:
+            Line("\t{ uint32_t old_al = ctx.eax & 0xFFu, old_cf = cf, al = old_al; cf = 0; "
+                 "if ((al & 0xFu) > 9) { cf = old_cf || al < 6u; al = (al - 6) & 0xFFu; } "
+                 "if (old_al > 0x99u || old_cf) { al = (al - 0x60u) & 0xFFu; cf = 1; } "
+                 "ctx.eax = (ctx.eax & 0xFFFFFF00u) | al; uint32_t r = al; " +
+                 Szp(8) + " }");
+            return true;
+
+        case ZYDIS_MNEMONIC_BOUND: {  // index in ops[0]; {lower, upper} bounds packed at the memory operand,
+            // either as two words (16 bit form) or two dwords (32 bit form), matching ops[0]'s width
+            const char* ST = W == 16 ? "int16_t" : "int32_t";
+            std::string hiEa = ea + (W == 16 ? " + 2" : " + 4");
+            emit(F("int32_t idx = (int32_t)(%s)(%s); int32_t lo = (int32_t)(%s)(%s); int32_t hi = (int32_t)(%s)(%s); "
+                   "if (idx < lo || idx > hi) x86_trap(ctx, 0x%X, \"bound range exceeded\");",
+                   ST, Read(ops[0], ea).c_str(), ST, Mem(W, ea).c_str(), ST, Mem(W, hiEa).c_str(), va));
+            return true;
+        }
 
         case ZYDIS_MNEMONIC_PUSH:
             if (ops[0].size == 16 && ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) {
@@ -465,10 +522,20 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
         case ZYDIS_MNEMONIC_LEAVE:
             Line("\tctx.esp = ctx.ebp; ctx.ebp = X86_MEM32(ctx.esp); ctx.esp += 4;");
             return true;
-        case ZYDIS_MNEMONIC_ENTER:
-            if (ops[1].imm.value.u != 0) return false;
-            Line(F("\tX86_PUSH32(ctx.ebp); ctx.ebp = ctx.esp; ctx.esp -= %uu;", uint32_t(ops[0].imm.value.u)));
+        case ZYDIS_MNEMONIC_ENTER: {
+            uint32_t size = uint32_t(ops[0].imm.value.u);
+            uint32_t nesting = uint32_t(ops[1].imm.value.u) & 0x1F;
+            if (!nesting) {
+                Line(F("\tX86_PUSH32(ctx.ebp); ctx.ebp = ctx.esp; ctx.esp -= %uu;", size));
+            } else {
+                // the rare nested (Pascal-style) display case: copies `nesting` outer frame pointers in turn
+                Line(F("\t{ X86_PUSH32(ctx.ebp); uint32_t frame_temp = ctx.esp, fp = ctx.ebp; "
+                       "for (uint32_t i = 1; i < %uu; i++) { fp -= 4; X86_PUSH32(X86_MEM32(fp)); } "
+                       "X86_PUSH32(frame_temp); ctx.ebp = frame_temp; ctx.esp -= %uu; }",
+                       nesting, size));
+            }
             return true;
+        }
         case ZYDIS_MNEMONIC_XLAT:
             Line("\tctx.eax = (ctx.eax & 0xFFFFFF00u) | X86_MEM8(ctx.ebx + (uint8_t)ctx.eax);");
             return true;
@@ -485,6 +552,9 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
             Line(F("\tx86_trap(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
             return true;
         case ZYDIS_MNEMONIC_INT:
+        case ZYDIS_MNEMONIC_INT1:
+        case ZYDIS_MNEMONIC_INTO:
+        case ZYDIS_MNEMONIC_IRETD:
         case ZYDIS_MNEMONIC_IN:
         case ZYDIS_MNEMONIC_OUT:
         case ZYDIS_MNEMONIC_CLI:
@@ -495,10 +565,50 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
         case ZYDIS_MNEMONIC_SIDT:
         case ZYDIS_MNEMONIC_LGDT:
         case ZYDIS_MNEMONIC_LIDT:
+        case ZYDIS_MNEMONIC_LLDT:
         case ZYDIS_MNEMONIC_RDMSR:
         case ZYDIS_MNEMONIC_WRMSR:
         case ZYDIS_MNEMONIC_INVLPG:
+            // system/ring-0 instructions a user mode game has no legitimate reason to execute: almost always a
+            // misdecode of data that landed in a code region (see the overlapping decode stats xbe_recomp prints),
+            // so this logs once and falls through rather than aborting the guest thread like x86_trap would.
             if (m == ZYDIS_MNEMONIC_IN) Line("\tctx.eax = 0;");
+            Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
+            return true;
+        case ZYDIS_MNEMONIC_INSB:
+        case ZYDIS_MNEMONIC_INSW:
+        case ZYDIS_MNEMONIC_INSD:
+        case ZYDIS_MNEMONIC_OUTSB:
+        case ZYDIS_MNEMONIC_OUTSW:
+        case ZYDIS_MNEMONIC_OUTSD:
+            // port block transfers: no hardware behind them here either; a rep prefix would otherwise spin forever
+            if (in.attributes & (ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE | ZYDIS_ATTRIB_HAS_REPNE)) Line("\tctx.ecx = 0;");
+            Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
+            return true;
+        case ZYDIS_MNEMONIC_ARPL:
+            Line("\tzf = 0;");  // no real selectors: never adjusted
+            Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
+            return true;
+        case ZYDIS_MNEMONIC_LAR:
+        case ZYDIS_MNEMONIC_VERR:
+        case ZYDIS_MNEMONIC_VERW:
+            // matches real hardware on failure: ZF clear, destination left untouched
+            Line("\tzf = 0;");
+            Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
+            return true;
+        case ZYDIS_MNEMONIC_SLDT:
+        case ZYDIS_MNEMONIC_STR:
+            emit(wr(0, "0u"));  // no LDT/TSS selector in this model
+            Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
+            return true;
+        case ZYDIS_MNEMONIC_LDS:
+        case ZYDIS_MNEMONIC_LES:
+        case ZYDIS_MNEMONIC_LFS:
+        case ZYDIS_MNEMONIC_LGS:
+        case ZYDIS_MNEMONIC_LSS:
+            // loads the 32 bit offset (a real pointer-sized value code may still use); the selector half is
+            // dropped - this host only models FS, and only as the fixed TLS base in ctx.fs_base
+            emit(wr(0, Mem(32, ea)));
             Line(F("\tx86_priv(ctx, 0x%X, \"%s\");", va, ZydisMnemonicGetString(m)));
             return true;
         default:

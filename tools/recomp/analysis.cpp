@@ -134,8 +134,10 @@ bool Analysis::DecodeFlow(uint32_t va, Insn& out, JumpTable* jt) {
         out.flow = Flow::Ret;
     } else if (m == ZYDIS_MNEMONIC_IRETD || m == ZYDIS_MNEMONIC_IRET || m == ZYDIS_MNEMONIC_INT3 ||
                m == ZYDIS_MNEMONIC_HLT || m == ZYDIS_MNEMONIC_UD2 || m == ZYDIS_MNEMONIC_UD0 ||
-               m == ZYDIS_MNEMONIC_UD1 || m == ZYDIS_MNEMONIC_INTO || m == ZYDIS_MNEMONIC_BOUND) {
+               m == ZYDIS_MNEMONIC_UD1 || m == ZYDIS_MNEMONIC_INTO) {
         out.flow = Flow::Stop;
+        // BOUND (array index range check) is not in this list: codegen emits it as a normal conditional trap, same
+        // as an unsigned division by zero would be, so execution falls through to the next instruction when in range
     } else if (in.meta.category == ZYDIS_CATEGORY_RET) {
         out.flow = Flow::Stop;  // far returns
     } else if (m == ZYDIS_MNEMONIC_JMP || in.meta.category == ZYDIS_CATEGORY_UNCOND_BR) {
