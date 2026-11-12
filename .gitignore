@@ -7,3 +7,5 @@
 # tools/auto_recomp scratch: scaffolded game projects and packaged output
 /games/
 /dist/
+__pycache__/
+*.pyc
