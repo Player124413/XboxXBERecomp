@@ -54,6 +54,15 @@ bool Init() {
         return false;
     }
     LOGI("memory: guest space at %p", static_cast<void*>(g_base));
+    // [0, kUserLow) is the null-pointer guard page on a real Xbox too: no legitimate XDK data, code, stack or heap
+    // object is ever placed there (g_user, the user VAD allocator below, starts handing out addresses at kUserLow).
+    // Commit it as ordinary zeroed, read/write scratch memory anyway, rather than leaving it reserved/no-access: a
+    // recompiled title occasionally dereferences a null-ish pointer it would not have on real hardware - usually
+    // because a data symbol an XDK build needed could not be matched against this image (see xdk/layout.h) and so
+    // some structure near address 0 stayed zero-initialized instead of pointing somewhere real. Letting that read or
+    // write land on real, zeroed memory turns what used to be a fatal access violation into a harmless no-op, so one
+    // bad pointer in one subsystem does not take down the whole game.
+    if (!Commit(0, kUserLow)) LOGE("memory: could not commit the null guard page, null-pointer bugs will crash");
     return true;
 }
 
