@@ -16,6 +16,16 @@ constexpr uint32_t kSystemSize = 0x10000000;
 constexpr uint32_t kStackBase = 0xD0000000;
 constexpr uint32_t kStackSize = 0x10000000;
 
+// backs data symbols the image's XDK build has no known signature for (see xdk/layout.h): committed and zeroed at
+// boot so the recompiled code and the host's XDK shims can read or write through them like any other guest address
+// instead of either corrupting real game memory at address 0 or deref'ing an unmapped pointer. Ends well short of
+// hle::kAbsent (0xFFFF0000, runtime/xdk/hle.h, the similar placeholder scheme for missing functions) in the same
+// unused top-of-address-space region no original Xbox title's own code, stack or heap ever reaches, so the two
+// reserved ranges never collide.
+constexpr uint32_t kUnknownDataBase = 0xFFF00000u;
+constexpr uint32_t kUnknownDataSize = 0x000E0000u;  // see codegen_emit.cpp: one kUnknownDataSlot per unresolved symbol
+constexpr uint32_t kUnknownDataSlot = 0x1000u;      // a page each, enough room for any one struct/array it backs
+
 // NT allocation flags
 constexpr uint32_t kMemCommit = 0x1000, kMemReserve = 0x2000, kMemDecommit = 0x4000, kMemRelease = 0x8000,
                    kMemTopDown = 0x100000, kMemNoZero = 0x800000;

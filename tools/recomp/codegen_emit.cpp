@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "codegen.h"
+#include "kernel/memory.h"
 
 namespace fs = std::filesystem;
 
@@ -224,10 +225,22 @@ bool CodeGen::Run() {
         ids += " \\\n\tX(" + name + ")";
         rows += F("\t{\"%s\", 0x%Xu},\n", name.c_str(), a);
     }
+    // a [data] symbol this image's library build has no signature for still gets a real address: one slot of
+    // mem::kUnknownDataBase's scratch region, committed and zeroed at boot (runtime/kernel/boot.cpp), so the host's
+    // XDK shims that read or write through it (see xdk/layout.h's XDK_REQUIRE) degrade instead of corrupting real
+    // game memory at address 0 or crashing on an unmapped one - the same safety net [[function]]/[symbols] already
+    // get from their own placeholder addresses a few lines up.
+    size_t absent_data = 0;
     for (auto& [name, va] : an_.cfg.data) {
-        syms += F("#define SYM_%s %08X\n#define HAS_%s %d\n", name.c_str(), va, name.c_str(), va ? 1 : 0);
+        uint32_t a = va;
+        if (!va) {
+            uint32_t slots = mem::kUnknownDataSize / mem::kUnknownDataSlot;
+            a = mem::kUnknownDataBase + uint32_t(absent_data % slots) * mem::kUnknownDataSlot;
+            absent_data++;
+        }
+        syms += F("#define SYM_%s %08X\n#define HAS_%s %d\n", name.c_str(), a, name.c_str(), va ? 1 : 0);
         ids += " \\\n\tX(" + name + ")";
-        rows += F("\t{\"%s\", 0x%Xu},\n", name.c_str(), va);
+        rows += F("\t{\"%s\", 0x%Xu},\n", name.c_str(), a);
     }
     if (an_.cfg.named) syms += "#define IMAGE_NAMED 1\n#define IMAGE_SYMBOLS(X)" + ids + "\n";
     for (auto& [name, v] : an_.cfg.layout) syms += F("#define XDK_%s 0x%X\n", name.c_str(), v);

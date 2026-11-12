@@ -1,9 +1,15 @@
 #pragma once
 // XDK data layouts come from the image config (sdk/xdk/<build>/layout.toml), data addresses from its [data]. One the
-// config lacks is unknown and traps where it is first needed rather than being guessed.
+// config lacks still gets a real address - a shared slot of mem::kUnknownDataBase's scratch region (see
+// codegen_emit.cpp and boot.cpp) - instead of being guessed, so reading or writing through it is safe. This logs
+// once per call site rather than trapping: a whole game stopping dead because one data symbol out of dozens could
+// not be matched against the SDK's signatures is a worse outcome than that one subsystem losing accuracy.
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
+#include <mutex>
+#include <set>
+#include <string>
 
 #include "core/log.h"
 #include "image_symbols.h"
@@ -20,11 +26,16 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
         if (k.value == kUnknown) return false;
     return true;
 }
-[[noreturn]] inline void LayoutMissing(const char* lib, const LayoutKey* keys, size_t n) {
+// not [[noreturn]] any more: every value that reaches here through XDK_DATA already points at committed, zeroed
+// scratch memory rather than an unmapped or otherwise dangerous address, so callers can keep going.
+inline void LayoutMissing(const char* lib, const LayoutKey* keys, size_t n) {
+    static std::mutex lock;
+    static std::set<std::string> warned;
+    std::lock_guard<std::mutex> guard(lock);
     for (size_t i = 0; i < n; i++)
-        if (keys[i].value == kUnknown) LOGE("%s: %s is unknown for this image, add it to the config", lib, keys[i].name);
-    logx::Flush();
-    std::abort();
+        if (keys[i].value == kUnknown && warned.insert(std::string(lib) + ":" + keys[i].name).second)
+            LOGE("%s: %s is unknown for this image; using placeholder memory for it instead of the real data", lib,
+                 keys[i].name);
 }
 }  // namespace xdk
 
