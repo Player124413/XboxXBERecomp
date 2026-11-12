@@ -161,7 +161,10 @@ inline void x87_store80(uint8_t* p, double v) {
 // digits, same precision limit the rest of this x87 model already accepts (st[8] is double, not true 80 bit extended).
 inline void x87_store_bcd(uint8_t* p, double v) {
     bool neg = std::signbit(v);
-    double r = std::round(std::fabs(v));
+    // nearbyint, not round: the freestanding <cmath> the game code builds against (nostdinc/nostdinc++) only
+    // offers the current-rounding-mode family (floor/ceil/trunc/nearbyint), matching real FBSTP's use of the
+    // FPU control word's rounding control rather than round-half-away-from-zero
+    double r = std::nearbyint(std::fabs(v));
     uint64_t n = r >= 1e18 ? 999999999999999999ull : uint64_t(r);
     for (int i = 0; i < 9; i++) {
         uint8_t lo = uint8_t(n % 10);
