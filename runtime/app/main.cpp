@@ -36,6 +36,21 @@ constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
 bool g_mode_changed = false;
 bool g_apply_posted = false;  // a display apply is waiting in the queue or running
 
+// first in line for every exception (AddVectoredExceptionHandler below): a recompiled title occasionally faults on
+// a guest page this process never committed, usually chasing a pointer or struct field that stayed zero because some
+// XDK data symbol for this build's layout could not be matched (see xdk/layout.h, kernel/memory.cpp's
+// RecoverFault). Map the page zeroed and retry instead of tearing the whole game down over it; only genuinely
+// unhandled faults (mem::RecoverFault declines, or any exception that is not an access violation at all) fall
+// through to WriteCrashDump below.
+LONG WINAPI RecoverGuestFault(EXCEPTION_POINTERS* e) {
+    auto* r = e->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    void* addr = reinterpret_cast<void*>(r->ExceptionInformation[1]);
+    bool is_execute = r->ExceptionInformation[0] == 8;  // DEP/no-execute, not a data access we can paper over
+    if (mem::RecoverFault(addr, is_execute)) return EXCEPTION_CONTINUE_EXECUTION;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 // crash dump in CrashDumps beside the exe
 LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
     // the dump holds no guest memory: the guest registers and return addresses go to the log
@@ -240,6 +255,9 @@ void Pace() {
 }  // namespace app
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+    // ahead of SetUnhandledExceptionFilter below: try to recover a guest access violation before it is ever treated
+    // as unhandled, so a game can keep running instead of crashing over one bad pointer in one subsystem
+    AddVectoredExceptionHandler(1, app::RecoverGuestFault);
     SetUnhandledExceptionFilter(app::WriteCrashDump);
     std::signal(SIGABRT, [](int) { app::WriteCrashDump(nullptr); });
     timeBeginPeriod(1);

@@ -1,6 +1,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -92,6 +93,29 @@ void Decommit(uint32_t va, uint32_t size) {
 }
 
 bool IsCommitted(uint32_t va) { return InPhysical(va) || g_committed[va >> 12] != 0; }
+
+// Last-resort recovery for a guest access violation: a recompiled title occasionally computes a bad pointer (usually
+// chasing a zeroed field that stayed zero because some XDK data symbol for this build's layout could not be matched,
+// see xdk/layout.h and the kUnknownDataBase/null-guard-page handling above) and touches a page this process never
+// committed. Rather than letting that take the whole game down, commit the single page it faulted on, zero-filled,
+// and let the faulting instruction retry - a read comes back as 0, a write lands normally from then on. Only pages
+// that were genuinely never committed are rescued this way: if the same page faults again right after being
+// committed, something else is wrong (e.g. a real logic bug, not a missing-symbol gap) and the caller should let the
+// process crash and report it normally instead of looping forever.
+bool RecoverFault(void* fault_addr, bool is_execute) {
+    if (!g_base || is_execute) return false;
+    uintptr_t rel = reinterpret_cast<uint8_t*>(fault_addr) - g_base;
+    if (rel >= (uintptr_t(1) << 32)) return false;  // not within the guest's 4 GB space at all
+    uint32_t va = uint32_t(rel);
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (IsCommitted(va)) return false;
+    uint32_t page = va & ~(kPage - 1);
+    if (!Commit(page, kPage)) return false;
+    static std::atomic<uint32_t> recovered{0};
+    if (recovered.fetch_add(1, std::memory_order_relaxed) < 256)
+        LOGE("memory: guest %08X faulted on an uncommitted page; mapped it zeroed instead of crashing", va);
+    return true;
+}
 
 // first fit allocator over a guest range
 class Ranges {

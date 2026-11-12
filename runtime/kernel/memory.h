@@ -35,6 +35,10 @@ uint8_t* Base();
 bool Commit(uint32_t va, uint32_t size);
 void Decommit(uint32_t va, uint32_t size);
 bool IsCommitted(uint32_t va);
+// called from the process' vectored exception handler (app/main.cpp) when guest code faults on an uncommitted page;
+// maps it zeroed and returns true if the faulting instruction should retry, false if the caller should let the
+// exception propagate (crash dump, then terminate) because the page was already valid or isn't guest memory at all
+bool RecoverFault(void* fault_addr, bool is_execute);
 
 // user virtual space, NTSTATUS results
 uint32_t AllocateVirtual(uint32_t& base, uint32_t& size, uint32_t type, uint32_t protect);
