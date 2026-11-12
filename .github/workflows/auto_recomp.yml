@@ -1,0 +1,72 @@
+name: Automated recompilation
+
+# Universal, hook-free Xbox XBE recompilation workflow. Give it a Hugging Face
+# link, a direct URL, or point it at an .iso/.xiso or default.xbe and it does
+# everything tools/auto_recomp/recomp.py does locally: find the game, scaffold
+# a project from templates/game with no hooks, resolve its XDK symbols
+# automatically, build it and publish two artifacts - the compiled exe and
+# the recompiled C++ source, kept separate.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: >-
+          Hugging Face link (repo URL, "user/repo", or "user/repo::path/to/file"),
+          a direct URL, or a local path to a .iso/.xiso, default.xbe or a .zip
+          containing one of those.
+        required: true
+      title:
+        description: "Override the window title (default: read from the XBE's certificate)"
+        required: false
+      exe_name:
+        description: "Override the executable name (default: derived from the title)"
+        required: false
+
+jobs:
+  recompile:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out the SDK
+        uses: actions/checkout@v4
+
+      - name: Install Clang and Ninja
+        shell: pwsh
+        run: choco install llvm ninja -y --no-progress
+
+      - name: Run the automated workflow
+        id: recomp
+        shell: pwsh
+        run: |
+          $args = @("tools/auto_recomp/recomp.py", "--source", "${{ inputs.source }}")
+          if ("${{ inputs.title }}" -ne "") { $args += @("--title", "${{ inputs.title }}") }
+          if ("${{ inputs.exe_name }}" -ne "") { $args += @("--exe", "${{ inputs.exe_name }}") }
+          python @args
+          if ($LASTEXITCODE -ne 0) { throw "recomp.py exited with code $LASTEXITCODE" }
+
+      - name: Upload recompiled exe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recompiled-exe
+          path: dist/*/exe/**
+          if-no-files-found: ignore
+
+      - name: Upload recompiled source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recompiled-source
+          path: dist/*/source/**
+          if-no-files-found: ignore
+
+      - name: Upload scaffolded project (on failure, for debugging)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-project-debug
+          path: |
+            games/*/config/**
+            games/*/out/build/release/CMakeCache.txt
+            games/*/out/build/release/**/*.log
+          if-no-files-found: ignore

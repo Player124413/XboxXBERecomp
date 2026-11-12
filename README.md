@@ -38,6 +38,16 @@ This tool was originally created for porting [Tom Clancy's Splinter Cell: Double
 
 A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles whose configs are complete: `xbe_symbols --sign config/a.toml [config/b.toml] --out sdk/xdk/<build>/signatures.toml`. Signatures are lengths and hashes of the functions with addresses masked, never library code.
 
+## Automated Workflow
+
+`tools/auto_recomp` turns the manual steps above into one command, with no hooks to write by hand:
+
+```
+python sdk/tools/auto_recomp/recomp.py --source <huggingface link, .iso, default.xbe, or a URL to one>
+```
+
+It fetches the source (downloading it and, for a disc image, reading its XDVDFS filesystem directly to pull out `default.xbe`), reads the XBE's title and library builds, scaffolds a game project from `templates/game` with every placeholder filled in automatically, runs `xbe_symbols`, builds it, and splits the result into two folders: the compiled exe and the recompiled C++ source, kept separate. `app::kGame` stays exactly as hook-free as the template: nothing here ever writes a `[[hook]]`, `[[function]]`, `[[switch]]` or an `X86_FUNC` body. The same thing runs as a GitHub Actions workflow (`.github/workflows/auto_recomp.yml`, manually triggered) for anyone without a Windows build machine handy. See [`tools/auto_recomp/README.md`](tools/auto_recomp/README.md) for details and its limits (mainly: it can't invent XDK signatures for a library build the SDK has never seen).
+
 ## Features
 
 ### Recompiler
