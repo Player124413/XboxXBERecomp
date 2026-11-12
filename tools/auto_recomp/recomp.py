@@ -120,6 +120,24 @@ def package(project_dir: Path, out_dir: Path, exe_name: str, slug: str, dist_roo
             src = redist_dir / name
             if src.exists():
                 shutil.copyfile(src, exe_dist / name)
+
+    # the compiler folder: the game builds its own code on first start (app::Blocker refuses to
+    # run otherwise), using clang.exe/lld-link.exe/xbe_recomp.exe plus the configs, runtime
+    # headers and xdk layouts CMake's compiler_files target already collected into
+    # out_dir/compiler - ship that whole folder, the same thing release.bat zips.
+    compiler_src = out_dir / "compiler"
+    if not compiler_src.exists():
+        raise SystemExit(f"build finished without producing {compiler_src} (the compiler_files CMake target)")
+    compiler_dist = exe_dist / "compiler"
+    shutil.copytree(compiler_src, compiler_dist, dirs_exist_ok=True)
+    # xbe_recomp.exe needs its own copy of the runtime beside it: Windows only looks beside the
+    # exe it is starting, not beside Game.exe, so the top-level copy above does not cover it.
+    if redist_dir:
+        for name in ("vcruntime140.dll", "msvcp140.dll"):
+            src = redist_dir / name
+            if src.exists():
+                shutil.copyfile(src, compiler_dist / name)
+
     (exe_dist / "assets").mkdir(exist_ok=True)
     (exe_dist / "README.txt").write_text(
         f"{exe_name}\n{'=' * len(exe_name)}\n\n"
